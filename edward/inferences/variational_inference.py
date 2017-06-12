@@ -55,6 +55,39 @@ class VariationalInference(Inference):
     """
     super(VariationalInference, self).initialize(*args, **kwargs)
 
+    if optimizer is None:
+      # Use ADAM with a decaying scale factor.
+      global_step = tf.Variable(0, trainable=False, name="global_step")
+      starter_learning_rate = 0.1
+      learning_rate = tf.train.exponential_decay(starter_learning_rate,
+                                                 global_step,
+                                                 100, 0.9, staircase=True)
+      optimizer = tf.train.AdamOptimizer(learning_rate)
+    elif isinstance(optimizer, str):
+      if optimizer == 'gradientdescent':
+        optimizer = tf.train.GradientDescentOptimizer(0.01)
+      elif optimizer == 'adadelta':
+        optimizer = tf.train.AdadeltaOptimizer()
+      elif optimizer == 'adagrad':
+        optimizer = tf.train.AdagradOptimizer(0.01)
+      elif optimizer == 'momentum':
+        optimizer = tf.train.MomentumOptimizer(0.01, 0.9)
+      elif optimizer == 'adam':
+        optimizer = tf.train.AdamOptimizer()
+      elif optimizer == 'ftrl':
+        optimizer = tf.train.FtrlOptimizer(0.01)
+      elif optimizer == 'rmsprop':
+        optimizer = tf.train.RMSPropOptimizer(0.01)
+      else:
+        raise ValueError('Optimizer class not found:', optimizer)
+
+      global_step = None
+    elif isinstance(optimizer, tf.train.Optimizer):
+      # Custom optimizers have no control over global_step.
+      global_step = None
+    else:
+      raise TypeError("Optimizer must be str or tf.train.Optimizer.")
+
     if var_list is None:
       # Traverse random variable graphs to get default list of variables.
       var_list = set()
@@ -71,6 +104,32 @@ class VariationalInference(Inference):
           var_list.update(get_variables(x, collection=trainables))
 
       var_list = list(var_list)
+
+    self._optimizer = optimizer
+    self._var_list = var_list
+    self._use_prettytensor = use_prettytensor
+    self.train = self.build_update()
+
+    self.reset.append(tf.variables_initializer(
+        tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=scope)))
+
+  def build_update(self):
+    """Build update rules, returning an assign op for parameters in
+    the passed in variable list.
+
+    Any derived class of ``VariationalInference`` **must** implement
+    this method or ``build_loss_and_gradients``.
+    """
+    # TODO the idea of this generalization is to
+    # 1. bridge monte carlo and VI method abstractions
+    # 2. allow VI to use coordinate ascent/non-gradient based methods
+    #   + if so, this means optimizer must not be a default argument
+    #  of VI but a subclass of it; or otherwise have it be a default
+    #  that's stored within build_update and which can then be
+    #  overwritten
+    optimizer = self._optimizer
+    var_list = self._var_list
+    use_prettytensor = self._use_prettytensor
 
     self.loss, grads_and_vars = self.build_loss_and_gradients(var_list)
 
@@ -126,17 +185,14 @@ class VariationalInference(Inference):
     scope = "optimizer_" + str(id(self))
     with tf.variable_scope(scope):
       if not use_prettytensor:
-        self.train = optimizer.apply_gradients(grads_and_vars,
-                                               global_step=global_step)
+        return optimizer.apply_gradients(grads_and_vars,
+                                         global_step=global_step)
       else:
         # Note PrettyTensor optimizer does not accept manual updates;
         # it autodiffs the loss directly.
-        self.train = pt.apply_optimizer(optimizer, losses=[self.loss],
-                                        global_step=global_step,
-                                        var_list=var_list)
-
-    self.reset.append(tf.variables_initializer(
-        tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=scope)))
+        return pt.apply_optimizer(optimizer, losses=[self.loss],
+                                  global_step=global_step,
+                                  var_list=var_list)
 
   def update(self, feed_dict=None):
     """Run one iteration of optimization.
@@ -185,8 +241,8 @@ class VariationalInference(Inference):
     """Build loss function and its gradients. They will be leveraged
     in an optimizer to update the model and variational parameters.
 
-    Any derived class of `VariationalInference` **must** implement
-    this method.
+    Any derived class of ``VariationalInference`` **must** implement
+    this method or ``build_update``.
 
     Raises:
       NotImplementedError.
