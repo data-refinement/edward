@@ -219,7 +219,6 @@ class Inference(object):
       self._summary_key = get_unique_name_scope("summaries")
       self._set_log_variables(log_vars)
       self.train_writer = tf.summary.FileWriter(logdir, tf.get_default_graph())
-      self.summarize = tf.summary.merge_all()
     else:
       self.logging = False
 
